@@ -1,0 +1,178 @@
+"""Persimmon ASP.NET Webpage
+http://persimmon-project.org
+
+Persimmon ASP.NET Page helps processing ASP.NET Pages
+
+"""
+
+
+__author__ = "Ivan Begtin (ibegtin@gmail.com)"
+__version__ = "3.0.4"
+__copyright__ = "Copyright (c) 2008 Ivan Begtin"
+__license__ = "Proprietary"
+
+import sys
+import random
+from html5lib import treebuilders, HTMLParser
+from lxml import etree
+from io import StringIO
+import urllib.request, urllib.error, urllib.parse, urllib.request, urllib.parse, urllib.error
+
+
+ASPNET_VER_1_1 = "1.1"
+ASPNET_VER_2_0 = "2.0"
+
+
+class Page:
+    """Generic web page"""
+    def __init__(self, url):
+        self.url = url
+        pass
+
+
+    
+class ASPNetPage:
+    """ASP.NET Web page description"""
+    def __init__(self, url, data=None):
+        self.url = url
+        self.form = None
+        self.version = ASPNET_VER_1_1
+        self.controls = {}
+        self.aspnetmeta = {}
+        self.links = []
+        # Initialize page by url
+        self.init(url, data)
+        
+    def init(self, url, data = None):
+        """Initialize web page"""
+        if not data:
+            f = urllib.request.urlopen(url)
+            s = f.read()
+            f.close()
+            self.data = StringIO(s)
+        else:
+            self.data = data
+        tree = treebuilders.getTreeBuilder("etree", etree)
+        parser = HTMLParser(tree=tree)
+        self.root = parser.parse(self.data, encoding='utf-8')
+        items = self.root.xpath("//input[@name='__VIEWSTATE']")
+        if items:
+            self.is_aspnet = True
+        else:
+            self.is_aspnet = False
+
+    def extract(self):
+        """Extracts information about ASP.NET form"""
+        items = self.root.xpath("//input[@name='__VIEWSTATE']")
+        if items:
+            form = items[0].xpath('//parent::form')[0]
+            self.form = form
+            controls = form.xpath('//input')
+            links = form.xpath("//a[contains(@href, '__doPostBack')]")
+            for link in links:
+                parts = link.attrib['href'].split("'")
+                attrs = {}
+                for key in list(link.attrib.keys()):
+                    attrs[key] = link.attrib[key]
+                thelink = [link.attrib['href'], parts[1].split('$'), parts[3], link.text, attrs, etree.tostring(link, pretty_print=True)]
+                self.links.append(thelink)
+                
+            for control in controls:
+                if 'value' in control.attrib:
+                    value = control.attrib['value']
+                else:
+                    value = ""
+                if control.attrib['name'] == '__EVENTVALIDATION':
+                    self.version = ASPNET_VER_2_0
+                if control.attrib['name'][:2] == '__':
+                    self.aspnetmeta[control.attrib['name']] = [control.attrib['name'], None, value]
+                else:
+                    self.controls[control.attrib['name']] = [control.attrib['name'], control.attrib['type'], control.attrib['name'].split('$'), value]
+                
+    @staticmethod
+    def getPage(url):
+        page = ASPNetPage(url)
+        page.extract()
+        return page
+
+    @staticmethod
+    def getPage(url, data = None):
+        page = ASPNetPage(url, data)
+        page.extract()
+        return page
+
+
+class ASPNetNavigation:
+    """Navigation logic for ASP.NET pages"""
+    def __init__(self, url = None):
+        if url:
+            self.current = self.go(url)
+            self.starturl = url
+            self.url = url
+        else:
+            self.current = None
+            self.starturl = None
+            self.url = None
+    
+    def go(self, url):
+        """Navigates to the URL specified"""
+        self.url = url 
+        self.current = ASPNetPage.getPage(url)
+        return self.current
+    
+    def do_postback(self, target, argument):
+        """Does postback using target and argument values"""
+        if self.current:
+            postfields = {}
+            for item in self.current.aspnetmeta:
+                postfields[item[0]] = item[2]
+            postfields['__EVENTTARGET'] = target
+            postfields['__EVENTARGUMENT'] = argument
+            post = urllib.parse.urlencode(postfields)
+            req = urllib.request.Request(self.url, post)
+            response = urllib.request.urlopen(req)
+            data = response.read()
+
+            self.current = ASPNetPage.getPage(self.url, data)
+            return self.current
+        return None
+
+    def do_aspnetpost(self, name, value):
+        """Does post of the form"""
+        if self.current:
+            postfields = {}
+            for key in list(self.current.aspnetmeta.keys()):
+                postfields[key] = self.current.aspnetmeta[key][2]
+            if self.current.controls[name][1] == 'image':
+                # For image it generates two params X and Y what shows position of the cursor
+                # Positions generated by randomizer from 1 to 20
+                postfields[name + '.x'] = str(random.randrange(0, 20, 1))
+                postfields[name + '.y'] = str(random.randrange(0, 20, 1))
+            else:
+                postfields[name] = value            
+            post = urllib.parse.urlencode(postfields)
+#            print post
+            req = urllib.request.Request(self.url, post)
+            response = urllib.request.urlopen(req)
+            data = response.read()
+#           print data
+            self.current = ASPNetPage.getPage(self.url, data)
+            return self.current
+        return None
+            
+            
+    
+def test(url):    
+    url = 'http://rnp.fas.gov.ru/complaint/fas/'
+    nav = ASPNetNavigation()
+    page = nav.go(url)
+    nav.do_aspnetpost("ctl00$phWorkZone$cList$gvMain$ctl02$btEdit", "")
+    #for link in page.links:
+#        print link[4]['title']
+
+#    for control in page.aspnetmeta:
+#        print control[0]
+    
+if __name__ == '__main__':
+    test(sys.argv[1])    
+    
